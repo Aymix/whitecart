@@ -1,0 +1,665 @@
+// src/pages/SellerDashboard.jsx
+import React, { useState, useEffect, useRef } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import { assets } from '../assets/img/assets';
+import { productService } from '../api';
+import toast, { Toaster } from 'react-hot-toast';
+
+const SellerDashboard = () => {
+  const [products, setProducts] = useState([]);
+  const [editingProduct, setEditingProduct] = useState(null);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [productToDelete, setProductToDelete] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const fileInputRef = useRef(null);
+  const navigate = useNavigate();
+
+  // Load products from the API
+  useEffect(() => {
+    const fetchProducts = async () => {
+      try {
+        const response = await productService.getProducts();
+        if (response.success) {
+          setProducts(response.data);
+        } else {
+          toast.error("Failed to load products");
+        }
+        setIsLoading(false);
+      } catch (error) {
+        console.error("Failed to load products:", error);
+        toast.error(error.message || "Failed to load products");
+        setIsLoading(false);
+      }
+    };
+
+    fetchProducts();
+  }, []);
+
+  // Fonctions CRUD
+  const handleEdit = (product) => {
+    try {
+      console.log('Editing product:', product);
+      // Create a deep copy of the product and ensure all fields are properly formatted
+      const productToEdit = {
+        ...product,
+        // Ensure price, offerPrice and stock are numbers
+        price: Number(product.price),
+        offerPrice: Number(product.offerPrice),
+        stock: Number(product.stock),
+        // Ensure description is an array
+        description: Array.isArray(product.description) ? [...product.description] : [product.description || ''],
+        // Keep the current image path but don't try to load it as a File object
+        imageUrl: product.image,
+        image: null // We'll only set this if the user uploads a new image
+      };
+      
+      console.log('Prepared product for editing:', productToEdit);
+      setEditingProduct(productToEdit);
+      
+      // Scroll to the edit form
+      setTimeout(() => {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }, 100);
+    } catch (error) {
+      console.error('Error preparing product for edit:', error);
+      toast.error('Could not edit product. Please try again.');
+    }
+  };
+
+  const handleDeleteClick = (product) => {
+    setProductToDelete(product);
+    setShowDeleteModal(true);
+  };
+
+  const handleDeleteConfirm = async () => {
+    try {
+      setIsLoading(true);
+      
+      // Only attempt to delete from API if the product has an _id (exists in the database)
+      if (productToDelete._id) {
+        const response = await productService.deleteProduct(productToDelete._id);
+        if (response.success) {
+          toast.success('Product deleted successfully');
+        } else {
+          toast.error('Failed to delete product');
+        }
+      }
+      
+      // Refresh products from the server
+      const productsResponse = await productService.getProducts();
+      if (productsResponse.success) {
+        setProducts(productsResponse.data);
+      }
+    } catch (error) {
+      console.error('Error deleting product:', error);
+      toast.error(error.message || 'Failed to delete product');
+    } finally {
+      setIsLoading(false);
+      setShowDeleteModal(false);
+      setProductToDelete(null);
+    }
+  };
+
+  const handleAddProduct = () => {
+    const newProduct = {
+      name: 'New Product',
+      description: ['Add product description here'],
+      category: 'Fruits',
+      price: 0.00,
+      offerPrice: 0.00,
+      stock: 0,
+      image: null
+    };
+    setEditingProduct(newProduct);
+  };
+
+  const handleSave = async () => {
+    if (!editingProduct) return;
+    
+    // Validate required fields
+    if (!editingProduct.name || !editingProduct.description || !editingProduct.category) {
+      toast.error('Please fill in all required fields');
+      return;
+    }
+    
+    // Validate prices
+    if (editingProduct.price <= 0 || editingProduct.offerPrice <= 0) {
+      toast.error('Prices must be greater than zero');
+      return;
+    }
+    
+    // Validate image when creating a new product
+    if (!editingProduct._id && !editingProduct.image) {
+      toast.error('Please upload a product image');
+      return;
+    }
+    
+    // Check authentication before making API call
+    const token = localStorage.getItem('token');
+    if (!token) {
+      toast.error('You need to log in as a seller to add products');
+      navigate('/seller-login');
+      return;
+    }
+    
+    // Debug: Print current auth status
+    console.log('Current auth token:', token);
+    console.log('User role:', localStorage.getItem('userRole'));
+    console.log('Editing product:', editingProduct);
+    
+    try {
+      setIsLoading(true);
+      toast.loading('Saving product...'); // Show loading toast
+      
+      // Prepare product data
+      const productData = new FormData();
+      
+      // Add text fields to FormData
+      productData.append('name', editingProduct.name);
+      productData.append('price', editingProduct.price.toString());
+      productData.append('offerPrice', editingProduct.offerPrice.toString());
+      productData.append('category', editingProduct.category);
+      productData.append('stock', editingProduct.stock.toString());
+      
+      // Handle description field - ensure it's properly formatted
+      if (Array.isArray(editingProduct.description)) {
+        editingProduct.description.forEach((desc, index) => {
+          productData.append(`description[${index}]`, desc);
+        });
+      } else if (typeof editingProduct.description === 'string') {
+        productData.append('description[0]', editingProduct.description);
+      } else {
+        productData.append('description[0]', 'Product description');
+      }
+      
+      // Handle image file - only append if it's a new file
+      if (editingProduct.image instanceof File) {
+        productData.append('image', editingProduct.image);
+        console.log('Appending new image file to FormData');
+      } else if (!editingProduct._id) {
+        // For new products, must have an image
+        toast.error('Please upload a product image');
+        setIsLoading(false);
+        toast.dismiss();
+        return;
+      }
+      
+      // Log FormData contents for debugging
+      console.log('FormData entries:');
+      for (let pair of productData.entries()) {
+        console.log(pair[0] + ': ' + pair[1]);
+      }
+      
+      let response;
+      
+      if (editingProduct._id) {
+        console.log('Updating existing product with ID:', editingProduct._id);
+        // Update existing product
+        response = await productService.updateProduct(editingProduct._id, productData);
+        console.log('Update response:', response);
+        
+        if (response.success) {
+          toast.dismiss();
+          toast.success('Product updated successfully');
+          // Refresh the product list
+          const productsResponse = await productService.getProducts();
+          if (productsResponse.success) {
+            setProducts(productsResponse.data);
+          }
+        } else {
+          toast.dismiss();
+          toast.error(response.message || 'Failed to update product');
+        }
+      } else {
+        console.log('Creating new product');
+        // Create new product
+        response = await productService.createProduct(productData);
+        console.log('Create response:', response);
+        
+        if (response.success) {
+          toast.dismiss();
+          toast.success('Product created successfully');
+          // Refresh the product list
+          const productsResponse = await productService.getProducts();
+          if (productsResponse.success) {
+            setProducts(productsResponse.data);
+          }
+        } else {
+          toast.dismiss();
+          toast.error(response.message || 'Failed to create product');
+        }
+      }
+    } catch (error) {
+      console.error('Error saving product:', error);
+      toast.dismiss();
+      toast.error(error.message || 'Failed to save product');
+    } finally {
+      setIsLoading(false);
+      setEditingProduct(null);
+    }
+  };
+
+  const handleCancel = () => {
+    setEditingProduct(null);
+  };
+
+  const handleInputChange = (e) => {
+    const { name, value } = e.target;
+    setEditingProduct({
+      ...editingProduct,
+      [name]: name === 'price' || name === 'offerPrice' || name === 'stock' 
+        ? parseFloat(value) || 0 
+        : name === 'description' 
+        ? [value] // Convert single string to array for description
+        : value
+    });
+  };
+
+  // Gestion de l'upload d'image
+  const handleUploadClick = () => {
+    fileInputRef.current.click();
+  };
+
+  const handleFileChange = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      // Store both the file object for API upload and a preview URL for display
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        setEditingProduct({
+          ...editingProduct,
+          image: file, // Store the actual file object for the API
+          imagePreview: e.target.result // Store the data URL for preview
+        });
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+  
+  // Handle seller logout
+  const handleLogout = () => {
+    // Clear all seller authentication data
+    localStorage.removeItem('token');
+    localStorage.removeItem('userRole');
+    localStorage.removeItem('sellerLoggedIn');
+    localStorage.removeItem('sellerData');
+    localStorage.removeItem('sellerToken');
+    localStorage.removeItem('sellerInfo');
+    
+    // Redirect to seller login page
+    toast.success('Logged out successfully');
+    navigate('/seller-login');
+  };
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="flex justify-center mb-6">
+            <div className="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-green-500"></div>
+          </div>
+          <h2 className="text-xl font-semibold text-gray-700">Loading products...</h2>
+          <p className="text-gray-500 mt-2">Please wait while we load your inventory</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-50 p-4 md:p-8">
+      <Toaster position="top-center" />
+      <div className="max-w-7xl mx-auto">
+        <div className="flex flex-col md:flex-row justify-between items-center mb-8">
+          <div className="flex items-center">
+            <img src={assets.logo} alt="GreenCart Logo" className="h-10 mr-3" />
+            <h1 className="text-3xl font-bold text-gray-800">Seller Dashboard</h1>
+          </div>
+          <button 
+            onClick={handleLogout}
+            className="mt-4 md:mt-0 px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg flex items-center transition"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-1" viewBox="0 0 20 20" fill="currentColor">
+              <path fillRule="evenodd" d="M3 3a1 1 0 00-1 1v12a1 1 0 102 0V4a1 1 0 00-1-1zm10.293 9.293a1 1 0 001.414 1.414l3-3a1 1 0 000-1.414l-3-3a1 1 0 10-1.414 1.414L14.586 9H7a1 1 0 100 2h7.586l-1.293 1.293z" clipRule="evenodd" />
+            </svg>
+            Logout
+          </button>
+        </div>
+        
+        {/* Statistiques */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+          <div className="bg-green-50 p-6 rounded-lg border border-green-200 shadow-sm flex items-center">
+            <div className="bg-green-100 p-3 rounded-full mr-4">
+              <img src={assets.box_icon} alt="Products" className="h-8 w-8" />
+            </div>
+            <div>
+              <h2 className="text-xl font-semibold text-green-800 mb-1">Products</h2>
+              <p className="text-3xl font-bold">{products.length}</p>
+            </div>
+          </div>
+          
+          <div className="bg-blue-50 p-6 rounded-lg border border-blue-200 shadow-sm flex items-center">
+            <div className="bg-blue-100 p-3 rounded-full mr-4">
+              <img src={assets.order_icon} alt="Orders" className="h-8 w-8" />
+            </div>
+            <div>
+              <h2 className="text-xl font-semibold text-blue-800 mb-1">Orders</h2>
+              <p className="text-3xl font-bold">56</p>
+            </div>
+          </div>
+          
+          <div className="bg-purple-50 p-6 rounded-lg border border-purple-200 shadow-sm flex items-center">
+            <div className="bg-purple-100 p-3 rounded-full mr-4">
+              <img src={assets.coin_icon} alt="Revenue" className="h-8 w-8" />
+            </div>
+            <div>
+              <h2 className="text-xl font-semibold text-purple-800 mb-1">Revenue</h2>
+              <p className="text-3xl font-bold">$1,240</p>
+            </div>
+          </div>
+        </div>
+        
+        {/* Gestion des produits */}
+        <div className="bg-white rounded-xl shadow-lg overflow-hidden">
+          <div className="p-6">
+            <div className="flex flex-col md:flex-row justify-between items-center mb-6">
+              <h2 className="text-xl font-semibold mb-4 md:mb-0">Your Products</h2>
+              <button 
+                onClick={handleAddProduct}
+                className="bg-green-500 hover:bg-green-600 text-white py-2 px-4 rounded-lg flex items-center transition"
+              >
+                <img src={assets.add_icon} alt="Add" className="h-5 w-5 mr-1" />
+                Add Product
+              </button>
+            </div>
+            
+            {/* Formulaire d'édition */}
+            {editingProduct && (
+              <div className="mb-8 p-6 bg-gray-50 rounded-lg border border-gray-200">
+                <h3 className="text-lg font-medium mb-4">
+                  {editingProduct.id ? `Editing: ${editingProduct.name}` : 'Add New Product'}
+                </h3>
+                
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Product Name</label>
+                    <input
+                      type="text"
+                      name="name"
+                      value={editingProduct.name}
+                      onChange={handleInputChange}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                    />
+                  </div>
+                  
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
+                    <textarea
+                      name="description"
+                      value={Array.isArray(editingProduct.description) ? editingProduct.description[0] : editingProduct.description}
+                      onChange={handleInputChange}
+                      rows="3"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                      placeholder="Describe your product..."
+                    ></textarea>
+                  </div>
+                  
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Category</label>
+                    <select
+                      name="category"
+                      value={editingProduct.category}
+                      onChange={handleInputChange}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                    >
+                      <option value="Fruits">Fruits</option>
+                      <option value="Vegetables">Vegetables</option>
+                      <option value="Dairy">Dairy</option>
+                      <option value="Meat">Meat</option>
+                      <option value="Bakery">Bakery</option>
+                      <option value="Beverages">Beverages</option>
+                    </select>
+                  </div>
+                  
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Price ($)</label>
+                    <input
+                      type="number"
+                      name="price"
+                      value={editingProduct.price}
+                      onChange={handleInputChange}
+                      step="0.01"
+                      min="0"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                    />
+                  </div>
+                  
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Offer Price ($)</label>
+                    <input
+                      type="number"
+                      name="offerPrice"
+                      value={editingProduct.offerPrice}
+                      onChange={handleInputChange}
+                      step="0.01"
+                      min="0"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                    />
+                  </div>
+                  
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Stock Quantity</label>
+                    <input
+                      type="number"
+                      name="stock"
+                      value={editingProduct.stock}
+                      onChange={handleInputChange}
+                      min="0"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                    />
+                        </div>
+                      </td>
+                      <td className="py-3 px-4">
+                        <span className="px-2 py-1 bg-gray-100 rounded text-sm">
+                          {product.category}
+                        </span>
+                      </td>
+                      <td className="py-3 px-4">
+                        <div className="text-gray-500 line-through">${product.price.toFixed(2)}</div>
+                      </td>
+                      <td className="py-3 px-4">
+                        <div className="text-green-600 font-medium">
+                          ${product.offerPrice.toFixed(2)}
+                        </div>
+                      </td>
+                      <td className="py-3 px-4">
+                        <span className={`px-3 py-1 rounded-full text-sm font-medium ${
+                          product.stock > 10 ? 'bg-green-100 text-green-800' : 
+                          product.stock > 0 ? 'bg-yellow-100 text-yellow-800' : 
+                          'bg-red-100 text-red-800'
+                        }`}>
+                          {product.stock} in stock
+                        </span>
+                      </td>
+                      <td className="py-3 px-4">
+                        <div className="flex space-x-2">
+                          <button
+                            onClick={() => handleEdit(product)}
+                            className="px-3 py-1 bg-blue-100 text-blue-700 rounded flex items-center text-sm hover:bg-blue-200"
+                          >
+                            <img src={assets.refresh_icon} alt="Edit" className="h-4 w-4 mr-1" />
+                            Edit
+                          </button>
+                          <button
+                            onClick={() => handleDeleteClick(product)}
+                            className="px-3 py-1 bg-red-100 text-red-700 rounded flex items-center text-sm hover:bg-red-200"
+                          >
+                            <img src={assets.remove_icon} alt="Delete" className="h-4 w-4 mr-1" />
+                            Delete
+                          </button>
+                        </div>
+                      </td>
+                        ref={fileInputRef}
+                        onChange={handleFileChange}
+                        className="hidden"
+                        accept="image/*"
+                      />
+                    </div>
+                  </div>
+                </div>
+                
+                <div className="mt-6 flex justify-end space-x-3">
+                  <button
+                    onClick={handleCancel}
+                    className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-100"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleSave}
+                    className="px-4 py-2 bg-green-500 text-white rounded-md hover:bg-green-600"
+                  >
+                    Save Product
+                  </button>
+                </div>
+              </div>
+            )}
+            
+            {/* Liste des produits */}
+            {products.length === 0 ? (
+              <div className="text-center py-12">
+                <div className="flex justify-center mb-6">
+                  <img src={assets.product_list_icon} alt="No products" className="h-24 w-24 opacity-50" />
+                </div>
+                <h3 className="text-xl font-semibold text-gray-700 mb-2">No Products Found</h3>
+                <p className="text-gray-500 mb-6">Add your first product to get started</p>
+                <button 
+                  onClick={handleAddProduct}
+                  className="bg-green-500 hover:bg-green-600 text-white py-2 px-4 rounded-lg flex items-center mx-auto"
+                >
+                  <img src={assets.add_icon} alt="Add" className="h-5 w-5 mr-1" />
+                  Add First Product
+                </button>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="min-w-full bg-white">
+                  <thead className="bg-gray-100">
+                    <tr>
+                      <th className="py-3 px-4 text-left">Product</th>
+                      <th className="py-3 px-4 text-left">Category</th>
+                      <th className="py-3 px-4 text-left">Price</th>
+                      <th className="py-3 px-4 text-left">Offer Price</th>
+                      <th className="py-3 px-4 text-left">Stock</th>
+                      <th className="py-3 px-4 text-left">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {products.map((product) => (
+                      <tr key={product._id} className="border-b hover:bg-gray-50">
+                        <td className="py-3 px-4">
+                          <div className="flex items-center">
+                            <img 
+                              src={`http://localhost:5000${product.image}`} 
+                              alt={product.name} 
+                              className="w-16 h-16 object-cover rounded mr-3"
+                            />
+                            <div>
+                              <div className="font-medium">{product.name}</div>
+                              <div className="text-xs text-gray-500">ID: {product._id}</div>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="py-3 px-4">
+                          <span className="px-2 py-1 bg-gray-100 rounded text-sm">
+                            {product.category}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4">
+                          <div className="text-gray-500 line-through">${product.price.toFixed(2)}</div>
+                        </td>
+                        <td className="py-3 px-4">
+                          <div className="text-green-600 font-medium">
+                            ${product.offerPrice.toFixed(2)}
+                          </div>
+                        </td>
+                        <td className="py-3 px-4">
+                          <span className={`px-3 py-1 rounded-full text-sm font-medium ${
+                            product.stock > 10 ? 'bg-green-100 text-green-800' : 
+                            product.stock > 0 ? 'bg-yellow-100 text-yellow-800' : 
+                            'bg-red-100 text-red-800'
+                          }`}>
+                            {product.stock} in stock
+                          </span>
+                        </td>
+                        <td className="py-3 px-4">
+                          <div className="flex space-x-2">
+                            <button
+                              onClick={() => handleEdit(product)}
+                              className="px-3 py-1 bg-blue-100 text-blue-700 rounded flex items-center text-sm hover:bg-blue-200"
+                            >
+                              <img src={assets.refresh_icon} alt="Edit" className="h-4 w-4 mr-1" />
+                              Edit
+                            </button>
+                            <button
+                              onClick={() => handleDeleteClick(product)}
+                              className="px-3 py-1 bg-red-100 text-red-700 rounded flex items-center text-sm hover:bg-red-200"
+                            >
+                              <img src={assets.remove_icon} alt="Delete" className="h-4 w-4 mr-1" />
+                              Delete
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+      
+      {/* Modal de suppression */}
+      {showDeleteModal && productToDelete && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-xl max-w-md w-full">
+            <div className="p-6">
+              <div className="flex justify-center mb-4">
+                <img src={assets.remove_icon} alt="Delete" className="h-12 w-12 text-red-500" />
+              </div>
+              <h3 className="text-xl font-semibold text-center mb-4">Confirm Deletion</h3>
+              <div className="flex justify-center mb-4">
+                <img 
+                  src={`http://localhost:5000${productToDelete.image}`} 
+                  alt={productToDelete.name} 
+                  className="h-16 w-16 object-cover rounded"
+                />
+              </div>
+              <p className="mb-6 text-center">
+                Are you sure you want to delete <span className="font-semibold">{productToDelete.name}</span>? 
+                This action cannot be undone.
+              </p>
+              
+              <div className="flex justify-center space-x-3">
+                <button
+                  onClick={() => setShowDeleteModal(false)}
+                  className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-100"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleDeleteConfirm}
+                  className="px-4 py-2 bg-red-500 text-white rounded-md hover:bg-red-600"
+                >
+                  Delete Product
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default SellerDashboard;
